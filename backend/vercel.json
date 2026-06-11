@@ -1,15 +1,5 @@
 ﻿{
-  "version": 2,
-  "functions": {
-    "server.ts": {
-      "memory": 1024,
-      "maxDuration": 10
-    }
-  },
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "server.ts"
-    }
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/server.ts" }
   ]
 }
