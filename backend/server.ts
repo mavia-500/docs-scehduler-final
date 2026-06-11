@@ -1,7 +1,6 @@
-import express from "express";
+﻿import express from "express";
 import cors from "cors";
 import { createServer } from "http";
-import { WebSocketServer } from "ws";
 import { PrismaClient, Prisma } from "@prisma/client";
 import dotenv from "dotenv";
 
@@ -28,39 +27,10 @@ function serializeBooking(booking: any) {
     driverPhone: booking.driverPhone,
     licensePlate: booking.licensePlate,
     type: booking.type,
-    direction: booking.direction, // 👈 ADD KAREIN
-
+    direction: booking.direction,
     createdAt: booking.createdAt.toISOString(),
   };
 }
-
-const server = createServer(app);
-const wss = new WebSocketServer({ server });
-
-function broadcast(message: unknown) {
-  const payload = JSON.stringify(message);
-  for (const client of wss.clients) {
-    if (client.readyState === client.OPEN) {
-      client.send(payload);
-    }
-  }
-}
-
-wss.on("connection", async (socket) => {
-  try {
-    const bookings = await prisma.booking.findMany({
-      orderBy: { startTime: "asc" },
-    });
-    socket.send(
-      JSON.stringify({
-        type: "bookings:init",
-        bookings: bookings.map(serializeBooking),
-      }),
-    );
-  } catch (error) {
-    console.error("Failed to send initial bookings", error);
-  }
-});
 
 app.get("/api/bookings", async (req, res) => {
   try {
@@ -96,11 +66,7 @@ app.post("/api/bookings/batch", async (req, res) => {
 
         if (!slotCounts.has(slotKey)) {
           const existingCount = await tx.booking.count({
-            where: {
-              dockId: booking.dockId,
-              startTime,
-              endTime,
-            },
+            where: { dockId: booking.dockId, startTime, endTime },
           });
           slotCounts.set(slotKey, { existingCount, newCount: 0 });
         }
@@ -121,7 +87,7 @@ app.post("/api/bookings/batch", async (req, res) => {
             driverPhone: booking.driverPhone,
             licensePlate: booking.licensePlate,
             type: booking.type,
-            direction: booking.direction ?? "inbound", // 👈 ADD KAREIN
+            direction: booking.direction ?? "inbound",
           },
         });
 
@@ -133,12 +99,7 @@ app.post("/api/bookings/batch", async (req, res) => {
       return created;
     });
 
-    const serialized = createdBookings.map(serializeBooking);
-    serialized.forEach((booking) => {
-      broadcast({ type: "booking:created", booking });
-    });
-
-    res.status(201).json(serialized);
+    res.status(201).json(createdBookings.map(serializeBooking));
   } catch (error) {
     console.error(error);
     if (error instanceof Error && error.message === "SLOT_FULL") {
@@ -148,9 +109,7 @@ app.post("/api/bookings/batch", async (req, res) => {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      return res
-        .status(409)
-        .json({ error: "This dock slot is already booked." });
+      return res.status(409).json({ error: "This dock slot is already booked." });
     }
     res.status(500).json({ error: "Unable to create bookings." });
   }
@@ -173,21 +132,17 @@ app.put("/api/bookings/:id", async (req, res) => {
         driverPhone: payload.driverPhone,
         licensePlate: payload.licensePlate,
         type: payload.type,
-        direction: payload.direction ?? "inbound", // 👈 ADD KAREIN
+        direction: payload.direction ?? "inbound",
       },
     });
-    const serialized = serializeBooking(updated);
-    broadcast({ type: "booking:updated", booking: serialized });
-    res.json(serialized);
+    res.json(serializeBooking(updated));
   } catch (error) {
     console.error(error);
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      return res
-        .status(409)
-        .json({ error: "This dock slot is already booked." });
+      return res.status(409).json({ error: "This dock slot is already booked." });
     }
     res.status(500).json({ error: "Unable to update booking." });
   }
@@ -197,7 +152,6 @@ app.delete("/api/bookings/:id", async (req, res) => {
   const bookingId = req.params.id;
   try {
     await prisma.booking.delete({ where: { id: bookingId } });
-    broadcast({ type: "booking:deleted", id: bookingId });
     res.status(204).end();
   } catch (error) {
     console.error(error);
@@ -205,7 +159,7 @@ app.delete("/api/bookings/:id", async (req, res) => {
   }
 });
 
+const server = createServer(app);
 server.listen(PORT, () => {
   console.log(`Booking API server running on http://localhost:${PORT}`);
-  console.log(`WebSocket server ready at ws://localhost:${PORT}`);
 });

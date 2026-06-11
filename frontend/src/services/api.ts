@@ -1,9 +1,8 @@
-/// <reference types="vite/client" />
+﻿/// <reference types="vite/client" />
 
 declare global {
   interface ImportMetaEnv {
     readonly VITE_API_BASE_URL: string;
-    readonly VITE_WS_URL: string;
   }
 
   interface ImportMeta {
@@ -15,7 +14,8 @@ import { Booking } from "../types";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000/api";
-const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:4000";
+
+const POLL_INTERVAL_MS = 5000; // har 5 second mein refresh
 
 export class BookingConflictError extends Error {
   constructor(message: string = "Slot already booked") {
@@ -40,12 +40,6 @@ export interface BookingCreatePayload {
 interface BookingBatchRequest {
   bookings: BookingCreatePayload[];
 }
-
-type BookingWebSocketMessage =
-  | { type: "bookings:init"; bookings: Booking[] }
-  | { type: "booking:created"; booking: Booking }
-  | { type: "booking:updated"; booking: Booking }
-  | { type: "booking:deleted"; id: string };
 
 function normalizeBooking(raw: any): Booking {
   return {
@@ -72,7 +66,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
       throw new BookingConflictError(text || "Slot already booked");
     }
     throw new Error(
-      text || `API request failed with status ${response.status}`,
+      text || `API request failed with status ${response.status}`
     );
   }
   return text ? JSON.parse(text) : ({} as T);
@@ -88,7 +82,7 @@ export async function fetchBookings(): Promise<Booking[]> {
 }
 
 export async function createBookings(
-  bookings: BookingCreatePayload[],
+  bookings: BookingCreatePayload[]
 ): Promise<Booking[]> {
   const response = await fetch(`${API_BASE_URL}/bookings/batch`, {
     method: "POST",
@@ -101,7 +95,7 @@ export async function createBookings(
 
 export async function updateBooking(
   id: string,
-  booking: Partial<BookingCreatePayload>,
+  booking: Partial<BookingCreatePayload>
 ): Promise<Booking> {
   const response = await fetch(`${API_BASE_URL}/bookings/${id}`, {
     method: "PUT",
@@ -120,6 +114,7 @@ export async function deleteBooking(id: string): Promise<void> {
   await handleResponse(response);
 }
 
+// WebSocket ki jagah Polling — har 5 second mein server se bookings fetch karta hai
 export function connectBookingWebSocket(options: {
   onInit: (bookings: Booking[]) => void;
   onCreated: (booking: Booking) => void;
@@ -127,83 +122,64 @@ export function connectBookingWebSocket(options: {
   onDeleted: (id: string) => void;
   onError?: (error: Error) => void;
 }): () => void {
-  let ws: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let destroyed = false;
-  let reconnectDelay = 3000;
-  const maxReconnectDelay = 30000;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let knownIds = new Set<string>();
 
-  function connect() {
+  async function poll() {
     if (destroyed) return;
 
-    ws = new WebSocket(WS_URL);
+    try {
+      const bookings = await fetchBookings();
 
-    ws.addEventListener("open", () => {
-      console.log("Booking WS connected");
-      // Reset delay on successful connection
-      reconnectDelay = 3000;
-    });
+      // Pehli baar — sab bookings ek saath bhejo
+      if (knownIds.size === 0) {
+        knownIds = new Set(bookings.map((b) => b.id));
+        options.onInit(bookings);
+      } else {
+        const freshIds = new Set(bookings.map((b) => b.id));
 
-    ws.addEventListener("message", (event) => {
-      try {
-        const message = JSON.parse(event.data) as BookingWebSocketMessage;
-        switch (message.type) {
-          case "bookings:init":
-            options.onInit(
-              Array.isArray(message.bookings)
-                ? message.bookings.map(normalizeBooking)
-                : [],
-            );
-            break;
-          case "booking:created":
-            options.onCreated(normalizeBooking(message.booking));
-            break;
-          case "booking:updated":
-            options.onUpdated(normalizeBooking(message.booking));
-            break;
-          case "booking:deleted":
-            options.onDeleted(message.id);
-            break;
-          default:
-            break;
+        // Nayi bookings — created
+        for (const booking of bookings) {
+          if (!knownIds.has(booking.id)) {
+            options.onCreated(booking);
+          }
         }
-      } catch (error) {
-        console.error("Failed to parse booking WS message", error);
-        options.onError?.(
-          error instanceof Error ? error : new Error("WS parse error"),
-        );
+
+        // Updated bookings
+        for (const booking of bookings) {
+          if (knownIds.has(booking.id)) {
+            options.onUpdated(booking);
+          }
+        }
+
+        // Delete hui bookings
+        for (const oldId of knownIds) {
+          if (!freshIds.has(oldId)) {
+            options.onDeleted(oldId);
+          }
+        }
+
+        knownIds = freshIds;
       }
-    });
-
-    ws.addEventListener("error", () => {
+    } catch (error) {
+      console.error("Polling error:", error);
       options.onError?.(
-        new Error(
-          `WebSocket connection failed. Check that your backend is running at ${WS_URL}`,
-        ),
+        error instanceof Error ? error : new Error("Polling failed")
       );
-    });
+    }
 
-    ws.addEventListener("close", (event) => {
-      if (destroyed) return;
-
-      console.warn(
-        `Booking WS closed (code: ${event.code}). Reconnecting in ${reconnectDelay / 1000}s...`,
-      );
-
-      reconnectTimer = setTimeout(() => {
-        // Exponential backoff, capped at maxReconnectDelay
-        reconnectDelay = Math.min(reconnectDelay * 1.5, maxReconnectDelay);
-        connect();
-      }, reconnectDelay);
-    });
+    if (!destroyed) {
+      pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+    }
   }
 
-  connect();
+  // Turant pehli baar chalaao
+  poll();
 
-  // Return a cleanup function to stop reconnecting and close the socket
+  // Cleanup function — component unmount pe polling band karo
   return () => {
     destroyed = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    ws?.close();
+    if (pollTimer) clearTimeout(pollTimer);
   };
 }
