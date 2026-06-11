@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BookingType {
+  manual
+  automatic
+}
+
+model Booking {
+  id            String      @id @default(uuid())
+  dockId        String
+  startTime     DateTime
+  endTime       DateTime
+  requesterName String
+  truckReference String
+  driverName    String
+  driverPhone   String
+  licensePlate  String
+  type          BookingType @default(manual)
+  direction      String   @default("inbound")
+  createdAt     DateTime    @default(now())
+}

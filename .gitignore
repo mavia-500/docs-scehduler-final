@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Build outputs
+build/
+dist/
+frontend/dist/
+backend/dist/
+
+# Coverage
+coverage/
+frontend/coverage/
+backend/coverage/
+
+# OS
+.DS_Store
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Prisma
+prisma/migrations/*/migration_real.sql
+
+# Generated Prisma Client
+prisma/generated/
